@@ -10,9 +10,11 @@ BASEDIR=$progname
 DEFAULT_CONFIG=gaia
 DEFAULT_PORT=transfer
 SKIP=no
+DO_RESET=${DO_RESET-yes}
 
 RELAYER_DIR=$(cd "$thisdir/.." && pwd)
 CONFIGS_DIR="$RELAYER_DIR/configs"
+CONFIG=$BASEDIR/config
 
 CHAIN_RE='^([^=]+)=(.+)$'
 LINK_RE='^([^:]+):([^:]+)$'
@@ -320,6 +322,76 @@ help)
 init)
   # Just continue.
   ;;
+reset-relayer)
+  [[ $DO_RESET == yes ]] || exit 0
+  source "$NCONFIG"
+
+  # Ensure user understands what will be deleted
+  if [[ -d $CONFIG ]] && [[ $1 != skip ]]; then
+    read -p "$progname: will delete $CONFIG folder. Do you wish to continue? (y/N): " -n 1 -r
+    echo 
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+  fi
+
+  set -e
+
+  rm -rf "$CONFIG"
+
+  echo "mkdir $CONFIG"
+  mkdir -p "$CONFIG"
+
+  for i in ${!IDS[@]}; do
+    id=${IDS[$i]}
+    json=${JSONS[$i]}
+    p26657=$(( 26657 - $i * 100 ))
+    out="$BASEDIR/config/$id.json"
+    echo "creating $out"
+    jq ".link + { \"chain-id\": \"$id\", \"rpc-addr\": \"http://localhost:$p26657\", \"key\": \"testkey\" }" "$json" \
+      > "$out"
+  done
+
+  for i in ${!SRCS[@]}; do
+    src=${SRCS[$i]}
+    srcport=${SRCPORTS[$i]}
+    get_alphabetic "$src"
+    srca=$ida
+
+    dst=${DSTS[$i]}
+    dstport=${DSTPORTS[$i]}
+    get_alphabetic "$dst"
+    dsta=$ida
+
+    get_alphabetic "$i"
+    ia=$ida
+    path="$ida"
+    out="$BASEDIR/config/$path.json"
+    echo "creating $out"
+    cat >"$out" <<EOF
+{
+  "src": {
+    "chain-id": "$src",
+    "client-id": "${dsta}client",
+    "connection-id": "${dsta}link",
+    "channel-id": "${dsta}xfer${ida}",
+    "port-id": "$srcport"
+  },
+  "dst": {
+    "chain-id": "$dst",
+    "client-id": "${srca}client",
+    "connection-id": "${srca}link",
+    "channel-id": "${srca}xfer${ida}",
+    "port-id": "$dstport"
+  },
+  "strategy": {
+    "type": "naive"
+  }
+}
+EOF
+  done
+  exit 0
+  ;;
 chains)
   source "$NCONFIG"
 
@@ -335,6 +407,8 @@ chains)
 
   echo "mkdir $DATA"
   mkdir -p "$DATA"
+
+  "$0" reset-relayer skip
 
   set -e
 
@@ -432,7 +506,7 @@ clients)
 
   # Ensure user understands what will be deleted
   if [[ -d $RELAYER_CONF ]] && [[ "$1" != "skip" ]]; then
-    read -p "$progname: will delete $RELAYER_CONF folder. Do you wish to continue? (y/n): " -n 1 -r
+    read -p "$progname: will delete the $RELAYER_CONF folder. Do you wish to continue? (y/n): " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 1
@@ -567,7 +641,8 @@ relay)
 run)
   mv nchainz/logs nchainz/logs-$(date +%Y%m%dT%H:%M:%S) || true
   mkdir -p nchainz/logs
-  "$0" chains skip &
+  "$0" reset-relayer skip
+  DO_RESET=no "$0" chains skip &
   "$0" clients skip &
   wait
   exit 0
@@ -593,7 +668,7 @@ if [[ -e $BASEDIR ]] && [[ $SKIP != yes ]]; then
 fi
 
 rm -rf "$BASEDIR"
-mkdir -p "$BASEDIR/config" "$LOGS"
+mkdir -p "$BASEDIR" "$LOGS"
 
 echo "creating $NCONFIG"
 cat <<EOF >"$NCONFIG"
@@ -609,55 +684,6 @@ SRCPORTS=( $(printf "'%s' " "${SRCPORTS[@]}"))
 DSTS=( $(printf "'%s' " "${DSTS[@]}"))
 DSTPORTS=( $(printf "'%s' " "${DSTPORTS[@]}"))
 EOF
-
-for i in ${!IDS[@]}; do
-  id=${IDS[$i]}
-  json=${JSONS[$i]}
-  p26657=$(( 26657 - $i * 100 ))
-  out="$BASEDIR/config/$id.json"
-  echo "creating $out"
-  jq ".link + { \"chain-id\": \"$id\", \"rpc-addr\": \"http://localhost:$p26657\", \"key\": \"testkey\" }" "$json" \
-    > "$out"
-done
-
-for i in ${!SRCS[@]}; do
-  src=${SRCS[$i]}
-  srcport=${SRCPORTS[$i]}
-  get_alphabetic "$src"
-  srca=$ida
-
-  dst=${DSTS[$i]}
-  dstport=${DSTPORTS[$i]}
-  get_alphabetic "$dst"
-  dsta=$ida
-
-  get_alphabetic "$i"
-  ia=$ida
-  path="$ida"
-  out="$BASEDIR/config/$path.json"
-  echo "creating $out"
-  cat >"$out" <<EOF
-{
-  "src": {
-    "chain-id": "$src",
-    "client-id": "${dsta}client",
-    "connection-id": "${dsta}link",
-    "channel-id": "${dsta}xfer${ida}",
-    "port-id": "$srcport"
-  },
-  "dst": {
-    "chain-id": "$dst",
-    "client-id": "${srca}client",
-    "connection-id": "${srca}link",
-    "channel-id": "${srca}xfer${ida}",
-    "port-id": "$dstport"
-  },
-  "strategy": {
-    "type": "naive"
-  }
-}
-EOF
-done
 
 #####################
 cat <<EOF
@@ -678,7 +704,8 @@ if [[ $SKIP != yes ]]; then
   fi
 fi
 
-"$0" run skip &
+"$0" reset-relayer skip
+DO_RESET=no "$0" run skip &
 "$0" relay skip &
 echo "Hit Control-C to exit"
 wait
